@@ -18,6 +18,7 @@ from kube_downscaler.helper import matches_time_spec
 from kube_downscaler.resources.stack import Stack
 
 ORIGINAL_REPLICAS_ANNOTATION = "downscaler/original-replicas"
+ORIGINAL_MAX_REPLICAS_ANNOTATION = "downscaler/original-max-replicas"
 FORCE_UPTIME_ANNOTATION = "downscaler/force-uptime"
 UPSCALE_PERIOD_ANNOTATION = "downscaler/upscale-period"
 DOWNSCALE_PERIOD_ANNOTATION = "downscaler/downscale-period"
@@ -149,6 +150,7 @@ def scale_up(
     resource: NamespacedAPIObject,
     replicas: int,
     original_replicas: int,
+    original_max_replicas: int,
     uptime,
     downtime,
 ):
@@ -163,17 +165,20 @@ def scale_up(
             f"Scaling up {resource.kind} {resource.namespace}/{resource.name} from {replicas} to {original_replicas} minReplicas (uptime: {uptime}, downtime: {downtime})"
         )
     else:
-        resource.replicas = original_replicas
+        resource.obj["spec"]["template"]["metadata"]["annotations"]["hpa.autoscaling.banzaicloud.io/minReplicas"] = str(original_replicas)
+        resource.obj["spec"]["template"]["metadata"]["annotations"]["hpa.autoscaling.banzaicloud.io/maxReplicas"] = str(original_max_replicas)
         logger.info(
             f"Scaling up {resource.kind} {resource.namespace}/{resource.name} from {replicas} to {original_replicas} replicas (uptime: {uptime}, downtime: {downtime})"
         )
     resource.annotations[ORIGINAL_REPLICAS_ANNOTATION] = None
+    resource.annotations[ORIGINAL_MAX_REPLICAS_ANNOTATION] = None
 
 
 def scale_down(
     resource: NamespacedAPIObject, replicas: int, target_replicas: int, uptime, downtime
 ):
-
+    resource.annotations[ORIGINAL_REPLICAS_ANNOTATION] = str(resource.obj["spec"]["template"]["metadata"]["annotations"]["hpa.autoscaling.banzaicloud.io/minReplicas"])
+    resource.annotations[ORIGINAL_MAX_REPLICAS_ANNOTATION] = str(resource.obj["spec"]["template"]["metadata"]["annotations"]["hpa.autoscaling.banzaicloud.io/maxReplicas"])
     if resource.kind == "CronJob":
         resource.obj["spec"]["suspend"] = True
         logger.info(
@@ -185,11 +190,12 @@ def scale_down(
             f"Scaling down {resource.kind} {resource.namespace}/{resource.name} from {replicas} to {target_replicas} minReplicas (uptime: {uptime}, downtime: {downtime})"
         )
     else:
-        resource.replicas = target_replicas
+        resource.obj["spec"]["template"]["metadata"]["annotations"]["hpa.autoscaling.banzaicloud.io/minReplicas"] = str(target_replicas)
+        resource.obj["spec"]["template"]["metadata"]["annotations"]["hpa.autoscaling.banzaicloud.io/maxReplicas"] = str(target_replicas)
         logger.info(
             f"Scaling down {resource.kind} {resource.namespace}/{resource.name} from {replicas} to {target_replicas} replicas (uptime: {uptime}, downtime: {downtime})"
         )
-    resource.annotations[ORIGINAL_REPLICAS_ANNOTATION] = str(replicas)
+
 
 
 def get_annotation_value_as_int(
@@ -224,6 +230,9 @@ def autoscale_resource(
         exclude = namespace_excluded or ignore_resource(resource, now)
         original_replicas = get_annotation_value_as_int(
             resource, ORIGINAL_REPLICAS_ANNOTATION
+        )
+        original_max_replicas = get_annotation_value_as_int(
+            resource, ORIGINAL_MAX_REPLICAS_ANNOTATION
         )
         downtime_replicas_from_annotation = get_annotation_value_as_int(
             resource, DOWNTIME_REPLICAS_ANNOTATION
@@ -284,7 +293,7 @@ def autoscale_resource(
                 and original_replicas > 0
             ):
 
-                scale_up(resource, replicas, original_replicas, uptime, downtime)
+                scale_up(resource, replicas, original_replicas, original_max_replicas, uptime, downtime)
                 update_needed = True
             elif (
                 not ignore
